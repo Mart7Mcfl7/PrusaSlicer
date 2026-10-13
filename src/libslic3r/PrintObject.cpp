@@ -66,7 +66,6 @@
 #include "libslic3r/Point.hpp"
 #include "libslic3r/InfillAboveBridges.hpp"
 #include "SLA/SupportTree.hpp"
-#include "SLA/SupportPointGenerator.hpp"
 #include "AABBMesh.hpp"
 #include "SLA/SupportPoint.hpp"
 
@@ -516,7 +515,7 @@ void PrintObject::generate_support_spots()
     }
 }
 
-static void generate_sla_style_supports_for_fff(PrintObject &po)
+static void generate_sla_style_supports_for_fff(PrintObject &po, std::function<void()> throw_on_cancel)
 {
     try {
         BOOST_LOG_TRIVIAL(info) << "SLA-style supports: entered for '" << po.model_object()->name << "'";
@@ -568,13 +567,10 @@ static void generate_sla_style_supports_for_fff(PrintObject &po)
         indexed_triangle_set mesh = po.model_object()->raw_indexed_triangle_set();
         its_transform(mesh, po.trafo_centered(), true);
 
-        // Z heights and lslices from already-sliced FDM layers
-        std::vector<float>      heights;
-        std::vector<ExPolygons> slices;
-        for (size_t li = 0; li < po.layers().size(); ++li) {
+        // Z heights of the already-sliced FDM layers
+        std::vector<float> heights;
+        for (size_t li = 0; li < po.layers().size(); ++li)
             heights.push_back(float(po.layers()[li]->slice_z));
-            slices.push_back(po.layers()[li]->lslices);
-        }
 
         // Support points: use manually placed ones if available, else auto-generate
         sla::SupportPoints sup_pts;
@@ -587,16 +583,69 @@ static void generate_sla_style_supports_for_fff(PrintObject &po)
                 sup_pts.push_back(t);
             }
         } else {
-            sla::SupportPointGeneratorData data = sla::prepare_generator_data(
-                std::vector<ExPolygons>(slices), heights);
-            sla::SupportPointGeneratorConfig pt_cfg;
-            pt_cfg.density_relative     = float(opt_f("support_points_density_relative", 100.f) / 100.f);
-            pt_cfg.head_diameter        = float(scfg.head_front_radius_mm * 2.0);
-            pt_cfg.island_configuration = sla::create_default_island_configuration(pt_cfg.head_diameter);
-            sla::LayerSupportPoints lpts = sla::generate_support_points(data, pt_cfg);
+            // The SLA point generator assumes resin bridges several mm between points and treats
+            // gradual slopes as self supporting, which leaves FDM overhangs unsupported. Detect the
+            // overhangs the same way tree / organic supports do (overhang threshold, enforcers,
+            // blockers, bridges) and cover each of them with support points instead.
+            std::vector<Polygons> overhangs = FFFTreeSupport::generate_overhangs(po, 0, throw_on_cancel);
+
+            // Point pitch follows the FDM support pattern spacing, scaled by the relative density
+            // (density is an area measure, hence the square root).
+            const float  density = std::max(0.1f, float(opt_i("support_points_density_relative", 100)) / 100.f);
+            const double head_r  = scfg.head_front_radius_mm;
+            const double pitch   = std::max(po.config().support_material_spacing.value, 2. * head_r) / std::sqrt(density);
+            const coord_t pitch_s = scaled<coord_t>(pitch);
+
+            // A point supports the overhang within one pitch around it and up to one pitch above it.
+            struct Placed { Point xy; double z; };
+            std::vector<Placed> placed;
+            auto is_supported = [&](const Point &pt, double z) {
+                for (auto it = placed.rbegin(); it != placed.rend() && it->z >= z - pitch; ++it)
+                    if ((it->xy - pt).cast<double>().squaredNorm() < sqr(double(pitch_s)))
+                        return true;
+                return false;
+            };
+
+            // Put the point on the underside of the overhang: cast a ray up from the empty layer below.
             AABBMesh emesh{mesh};
-            double allowed_move = heights.size() > 1 ? double(heights[1] - heights[0]) + 1e-6 : 0.1;
-            sup_pts = sla::move_on_mesh_surface(lpts, emesh, allowed_move);
+            auto place = [&](const Point &pt, double z_below, double z) {
+                if (is_supported(pt, z))
+                    return;
+                Vec3d src(unscaled(pt.x()), unscaled(pt.y()), z_below);
+                Vec3d pos;
+                if (AABBMesh::hit_result hit = emesh.query_ray_hit(src, Vec3d::UnitZ()); hit.is_hit() && z_below + hit.distance() <= z + EPSILON) {
+                    pos = src + hit.distance() * Vec3d::UnitZ();
+                } else {
+                    int tri_idx;
+                    emesh.squared_distance(src, tri_idx, pos);
+                }
+                sup_pts.push_back(sla::SupportPoint{ pos.cast<float>(), float(head_r), sla::SupportPointType::slope });
+                placed.push_back({ pt, z });
+            };
+
+            for (size_t li = 1; li < overhangs.size() && li < heights.size(); ++li) {
+                if (overhangs[li].empty())
+                    continue;
+                throw_on_cancel();
+                const double z_below = heights[li - 1];
+                const double z       = heights[li];
+                for (const ExPolygon &overhang : union_ex(overhangs[li])) {
+                    // Keep the heads off the very edge when the overhang is wide enough,
+                    // thin slope slivers are sampled along their outline.
+                    ExPolygons inner = offset_ex(overhang, -scaled<float>(head_r));
+                    for (const ExPolygon &area : inner.empty() ? ExPolygons{ overhang } : inner) {
+                        for (const Polygon &poly : to_polygons(area))
+                            for (const Point &pt : poly.equally_spaced_points(double(pitch_s)))
+                                place(pt, z_below, z);
+                        // Fill the inside on a global grid, so that the grid lines up between layers.
+                        BoundingBox bb = get_extents(area);
+                        for (coord_t y = (bb.min.y() / pitch_s) * pitch_s; y <= bb.max.y(); y += pitch_s)
+                            for (coord_t x = (bb.min.x() / pitch_s) * pitch_s; x <= bb.max.x(); x += pitch_s)
+                                if (Point pt(x, y); area.contains(pt))
+                                    place(pt, z_below, z);
+                    }
+                }
+            }
         }
 
         BOOST_LOG_TRIVIAL(info) << "SLA-style supports: " << sup_pts.size() << " support points, "
@@ -607,9 +656,10 @@ static void generate_sla_style_supports_for_fff(PrintObject &po)
         // Run the SLA support tree generator
         sla::SupportableMesh sm(mesh, sup_pts, scfg);
         sla::JobController ctl;
-        ctl.stopcondition = []() { return false; };
+        ctl.stopcondition = [&po]() { return po.print()->canceled(); };
         ctl.cancelfn      = []() {};
         auto [sup_mesh, tree_out] = sla::create_support_tree(sm, ctl);
+        throw_on_cancel();
         BOOST_LOG_TRIVIAL(info) << "SLA-style supports: tree mesh vertices=" << sup_mesh.vertices.size();
         if (sup_mesh.empty())
             return;
@@ -633,6 +683,8 @@ static void generate_sla_style_supports_for_fff(PrintObject &po)
         }
         BOOST_LOG_TRIVIAL(info) << "SLA-style supports: done, " << sid << " support layers generated";
 
+    } catch (const CanceledException &) {
+        throw;
     } catch (const std::exception &ex) {
         BOOST_LOG_TRIVIAL(error) << "SLA-style supports: exception: " << ex.what();
     } catch (...) {
@@ -3399,7 +3451,7 @@ void PrintObject::_generate_support_material()
     if (this->has_support() && (m_config.support_material_style == smsTree || m_config.support_material_style == smsOrganic)) {
         fff_tree_support_generate(*this, std::function<void()>([this](){ this->throw_if_canceled(); }));
     } else if (this->has_support() && m_config.support_material_style == smsSLAPillar) {
-        generate_sla_style_supports_for_fff(*this);
+        generate_sla_style_supports_for_fff(*this, [this](){ this->throw_if_canceled(); });
     } else {
         // If support style is set to Organic however only raft will be built but no support,
         // build snug raft instead.

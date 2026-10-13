@@ -305,6 +305,11 @@ using SupportElements = std::deque<SupportElement>;
     return support_element_collision_radius(settings, elem.state);
 }
 
+// Overhangs of an FDM object which need support, honoring the overhang threshold angle,
+// support enforcers / blockers, enforced layers and "don't support bridges".
+// Returns one entry per raft layer followed by one entry per object layer.
+[[nodiscard]] std::vector<Polygons> generate_overhangs(const PrintObject &print_object, size_t num_raft_layers, std::function<void()> throw_on_cancel);
+
 } // namespace FFFTreeSupport
 
 void fff_tree_support_generate(PrintObject &print_object, std::function<void()> throw_on_cancel = []{});

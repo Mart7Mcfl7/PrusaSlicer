@@ -216,9 +216,8 @@ static std::vector<std::pair<TreeSupportSettings, std::vector<size_t>>> group_me
 }
 #endif
 
-[[nodiscard]] static const std::vector<Polygons> generate_overhangs(const TreeSupportSettings &settings, const PrintObject &print_object, std::function<void()> throw_on_cancel)
+std::vector<Polygons> generate_overhangs(const PrintObject &print_object, size_t num_raft_layers, std::function<void()> throw_on_cancel)
 {
-    const size_t num_raft_layers   = settings.raft_layers.size();
     const size_t num_object_layers = print_object.layer_count();
     const size_t num_layers        = num_object_layers + num_raft_layers;
     std::vector<Polygons> out(num_layers, Polygons{});
@@ -3474,7 +3473,7 @@ static void generate_support_areas(Print &print, const BuildVolume &build_volume
 
         //FIXME generating overhangs just for the furst mesh of the group.
         assert(processing.second.size() == 1);
-        std::vector<Polygons>        overhangs = generate_overhangs(config, *print.get_object(processing.second.front()), throw_on_cancel);
+        std::vector<Polygons>        overhangs = generate_overhangs(*print.get_object(processing.second.front()), config.raft_layers.size(), throw_on_cancel);
 
         // ### Precalculate avoidances, collision etc.
         size_t num_support_layers = precalculate(print, overhangs, processing.first, processing.second, volumes, throw_on_cancel);
