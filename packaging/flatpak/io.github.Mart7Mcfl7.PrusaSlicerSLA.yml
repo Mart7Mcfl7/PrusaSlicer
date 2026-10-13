@@ -326,7 +326,7 @@ modules:
       -DSLIC3R_BUILD_TESTS=ON \
       -DSLIC3R_DESKTOP_INTEGRATION=OFF \
       -DCMAKE_BUILD_TYPE=Release
-    /app/cmake/bin/cmake --build .
+    /app/cmake/bin/cmake --build . --parallel ${FLATPAK_BUILDER_N_JOBS}
     ctest --verbose
     /app/cmake/bin/cmake --build . --target install > /dev/null
 
