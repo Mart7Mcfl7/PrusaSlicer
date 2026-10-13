@@ -1593,6 +1593,32 @@ void TabPrint::build()
         optgroup->append_single_option_line("support_tree_branch_distance", path);
         optgroup->append_single_option_line("support_tree_top_rate", path);
 
+        optgroup = page->new_optgroup(L("SLA-style pillar supports"));
+        optgroup->append_single_option_line("supports_enable");
+        optgroup->append_single_option_line("support_tree_type");
+        optgroup->append_single_option_line("support_enforcers_only");
+        optgroup->append_single_option_line("support_points_density_relative");
+
+        optgroup = page->new_optgroup(L("SLA support head"));
+        optgroup->append_single_option_line("support_head_front_diameter");
+        optgroup->append_single_option_line("support_head_penetration");
+        optgroup->append_single_option_line("support_head_width");
+
+        optgroup = page->new_optgroup(L("SLA support pillar"));
+        optgroup->append_single_option_line("support_pillar_diameter");
+        optgroup->append_single_option_line("support_small_pillar_diameter_percent");
+        optgroup->append_single_option_line("support_max_bridges_on_pillar");
+        optgroup->append_single_option_line("support_pillar_connection_mode");
+        optgroup->append_single_option_line("support_buildplate_only");
+        optgroup->append_single_option_line("support_pillar_widening_factor");
+        optgroup->append_single_option_line("support_max_weight_on_model");
+        optgroup->append_single_option_line("support_base_diameter");
+        optgroup->append_single_option_line("support_base_height");
+        optgroup->append_single_option_line("support_base_safety_distance");
+        optgroup->append_single_option_line("support_critical_angle");
+        optgroup->append_single_option_line("support_max_bridge_length");
+        optgroup->append_single_option_line("support_max_pillar_link_distance");
+
     page = add_options_page(L("Speed"), "time");
         optgroup = page->new_optgroup(L("Speed for print moves"));
         optgroup->append_single_option_line("perimeter_speed");

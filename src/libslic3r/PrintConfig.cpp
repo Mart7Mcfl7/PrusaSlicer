@@ -176,7 +176,8 @@ static const t_config_enum_values s_keys_map_SupportMaterialStyle {
     { "grid",           smsGrid },
     { "snug",           smsSnug },
     { "tree",           smsTree },
-    { "organic",        smsOrganic }
+    { "organic",        smsOrganic },
+    { "sla_pillar",     smsSLAPillar }
 };
 CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(SupportMaterialStyle)
 
@@ -3506,9 +3507,10 @@ void PrintConfigDef::init_fff_params()
                      "will create more stable supports, while snug support towers will save material and reduce "
                      "object scarring.");
     def->set_enum<SupportMaterialStyle>({
-        { "grid", L("Grid") }, 
-        { "snug", L("Snug") },
-        { "organic", L("Organic") }
+        { "grid",       L("Grid") },
+        { "snug",       L("Snug") },
+        { "organic",    L("Organic") },
+        { "sla_pillar", L("SLA Pillar") }
     });
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionEnum<SupportMaterialStyle>(smsGrid));

@@ -65,6 +65,10 @@
 #include "tcbspan/span.hpp"
 #include "libslic3r/Point.hpp"
 #include "libslic3r/InfillAboveBridges.hpp"
+#include "SLA/SupportTree.hpp"
+#include "SLA/SupportPointGenerator.hpp"
+#include "AABBMesh.hpp"
+#include "SLA/SupportPoint.hpp"
 
 using namespace std::literals;
 
@@ -512,12 +516,136 @@ void PrintObject::generate_support_spots()
     }
 }
 
+static void generate_sla_style_supports_for_fff(PrintObject &po)
+{
+    try {
+        BOOST_LOG_TRIVIAL(info) << "SLA-style supports: entered for '" << po.model_object()->name << "'";
+
+        const DynamicPrintConfig &full_cfg = po.print()->full_print_config();
+
+        auto opt_f = [&](const char *k, float d) -> float {
+            const auto *o = full_cfg.opt<ConfigOptionFloat>(k); return o ? float(o->value) : d;
+        };
+        auto opt_pct = [&](const char *k, float d) -> float {
+            const auto *o = full_cfg.opt<ConfigOptionPercent>(k); return o ? float(o->value) : d;
+        };
+        auto opt_b = [&](const char *k, bool d) -> bool {
+            const auto *o = full_cfg.opt<ConfigOptionBool>(k); return o ? o->value : d;
+        };
+        auto opt_i = [&](const char *k, int d) -> int {
+            const auto *o = full_cfg.opt<ConfigOptionInt>(k); return o ? o->value : d;
+        };
+
+        sla::SupportTreeConfig scfg;
+        scfg.enabled = true;
+        const auto *tt = full_cfg.opt<ConfigOptionEnum<sla::SupportTreeType>>("support_tree_type");
+        scfg.tree_type = tt ? tt->value : sla::SupportTreeType::Default;
+        std::string p = (scfg.tree_type == sla::SupportTreeType::Default) ? "support_" : "branchingsupport_";
+
+        double pillar_r = 0.5 * opt_f((p+"pillar_diameter").c_str(), 0.8f);
+        scfg.head_front_radius_mm        = 0.5 * opt_f((p+"head_front_diameter").c_str(), 0.4f);
+        scfg.head_back_radius_mm         = pillar_r;
+        scfg.head_fallback_radius_mm     = 0.01 * opt_pct((p+"small_pillar_diameter_percent").c_str(), 50.f) * pillar_r;
+        scfg.head_penetration_mm         = opt_f((p+"head_penetration").c_str(), 0.2f);
+        scfg.head_width_mm               = opt_f((p+"head_width").c_str(), 1.0f);
+        scfg.object_elevation_mm         = 0.f; // FDM: pillars always reach Z=0 (the bed)
+        scfg.bridge_slope                = opt_f((p+"critical_angle").c_str(), 45.f) * PI / 180.0;
+        scfg.max_bridge_length_mm        = opt_f((p+"max_bridge_length").c_str(), 15.f);
+        scfg.max_pillar_link_distance_mm = opt_f((p+"max_pillar_link_distance").c_str(), 10.f);
+        scfg.ground_facing_only          = opt_b((p+"buildplate_only").c_str(), false);
+        scfg.pillar_widening_factor      = opt_f((p+"pillar_widening_factor").c_str(), 0.f);
+        scfg.base_radius_mm              = 0.5 * opt_f((p+"base_diameter").c_str(), 2.f);
+        scfg.base_height_mm              = opt_f((p+"base_height").c_str(), 0.5f);
+        scfg.max_bridges_on_pillar       = unsigned(opt_i((p+"max_bridges_on_pillar").c_str(), 3));
+        scfg.max_weight_on_model_support = opt_f((p+"max_weight_on_model").c_str(), 0.f);
+        scfg.pillar_base_safety_distance_mm = opt_f((p+"base_safety_distance").c_str(), 0.f);
+        if (scfg.pillar_base_safety_distance_mm < EPSILON)
+            scfg.pillar_base_safety_distance_mm = sla::SupportTreeConfig::safety_distance_mm;
+        const auto *pcm = full_cfg.opt<ConfigOptionEnum<SLAPillarConnectionMode>>((p+"pillar_connection_mode").c_str());
+        scfg.pillar_connection_mode = pcm ? pcm->value : sla::PillarConnectionMode::cross;
+
+        // Model mesh in FDM print-centered coordinates (same system as layer slices)
+        indexed_triangle_set mesh = po.model_object()->raw_indexed_triangle_set();
+        its_transform(mesh, po.trafo_centered(), true);
+
+        // Z heights and lslices from already-sliced FDM layers
+        std::vector<float>      heights;
+        std::vector<ExPolygons> slices;
+        for (size_t li = 0; li < po.layers().size(); ++li) {
+            heights.push_back(float(po.layers()[li]->slice_z));
+            slices.push_back(po.layers()[li]->lslices);
+        }
+
+        // Support points: use manually placed ones if available, else auto-generate
+        sla::SupportPoints sup_pts;
+        const ModelObject &mo = *po.model_object();
+        if (mo.sla_points_status == sla::PointsStatus::UserModified && !mo.sla_support_points.empty()) {
+            const Transform3d &tr = po.trafo_centered();
+            for (const sla::SupportPoint &sp : mo.sla_support_points) {
+                sla::SupportPoint t = sp;
+                t.pos = (tr * sp.pos.cast<double>()).cast<float>();
+                sup_pts.push_back(t);
+            }
+        } else {
+            sla::SupportPointGeneratorData data = sla::prepare_generator_data(
+                std::vector<ExPolygons>(slices), heights);
+            sla::SupportPointGeneratorConfig pt_cfg;
+            pt_cfg.density_relative     = float(opt_f("support_points_density_relative", 100.f) / 100.f);
+            pt_cfg.head_diameter        = float(scfg.head_front_radius_mm * 2.0);
+            pt_cfg.island_configuration = sla::create_default_island_configuration(pt_cfg.head_diameter);
+            sla::LayerSupportPoints lpts = sla::generate_support_points(data, pt_cfg);
+            AABBMesh emesh{mesh};
+            double allowed_move = heights.size() > 1 ? double(heights[1] - heights[0]) + 1e-6 : 0.1;
+            sup_pts = sla::move_on_mesh_surface(lpts, emesh, allowed_move);
+        }
+
+        BOOST_LOG_TRIVIAL(info) << "SLA-style supports: " << sup_pts.size() << " support points, "
+                                << heights.size() << " layers, z0=" << (heights.empty() ? 0.f : heights[0]);
+        if (sup_pts.empty())
+            return;
+
+        // Run the SLA support tree generator
+        sla::SupportableMesh sm(mesh, sup_pts, scfg);
+        sla::JobController ctl;
+        ctl.stopcondition = []() { return false; };
+        ctl.cancelfn      = []() {};
+        auto [sup_mesh, tree_out] = sla::create_support_tree(sm, ctl);
+        BOOST_LOG_TRIVIAL(info) << "SLA-style supports: tree mesh vertices=" << sup_mesh.vertices.size();
+        if (sup_mesh.empty())
+            return;
+
+        // Slice the support mesh and inject as SupportLayers
+        std::vector<ExPolygons> sup_slices = slice_mesh_ex(sup_mesh, heights);
+        int sid = 0;
+        for (size_t i = 0; i < po.layers().size(); ++i) {
+            if (sup_slices[i].empty()) continue;
+            const Slic3r::Layer *ml = po.layers()[i];
+            SupportLayer *sl = po.add_support_layer(sid++, 0, ml->height, ml->print_z);
+            Flow lflow = support_material_flow(&po, float(ml->height));
+            Polygons loops;
+            for (const ExPolygon &ep : sup_slices[i]) {
+                loops.push_back(ep.contour);
+                for (const Polygon &h : ep.holes) loops.push_back(h);
+            }
+            extrusion_entities_append_loops(sl->support_fills.entities,
+                std::move(loops), {ExtrusionRole::SupportMaterial, lflow});
+            append(sl->support_islands, sup_slices[i]);
+        }
+        BOOST_LOG_TRIVIAL(info) << "SLA-style supports: done, " << sid << " support layers generated";
+
+    } catch (const std::exception &ex) {
+        BOOST_LOG_TRIVIAL(error) << "SLA-style supports: exception: " << ex.what();
+    } catch (...) {
+        BOOST_LOG_TRIVIAL(error) << "SLA-style supports: unknown exception";
+    }
+}
+
 void PrintObject::generate_support_material()
 {
     if (this->set_started(posSupportMaterial)) {
         this->clear_support_layers();
         if ((this->has_support() && m_layers.size() > 1) || (this->has_raft() && ! m_layers.empty())) {
-            m_print->set_status(70, _u8L("Generating support material"));    
+            m_print->set_status(70, _u8L("Generating support material"));
             this->_generate_support_material();
             m_print->throw_if_canceled();
         } else {
@@ -773,6 +901,45 @@ bool PrintObject::invalidate_state_by_config_options(
             || opt_key == "support_material_contact_distance" 
             || opt_key == "xy_size_compensation") {
             steps.emplace_back(posSlice);
+        } else if (
+               opt_key == "supports_enable"
+            || opt_key == "support_tree_type"
+            || opt_key == "support_enforcers_only"
+            || opt_key == "support_points_density_relative"
+            || opt_key == "support_head_front_diameter"
+            || opt_key == "support_head_penetration"
+            || opt_key == "support_head_width"
+            || opt_key == "support_pillar_diameter"
+            || opt_key == "support_small_pillar_diameter_percent"
+            || opt_key == "support_max_bridges_on_pillar"
+            || opt_key == "support_max_weight_on_model"
+            || opt_key == "support_pillar_connection_mode"
+            || opt_key == "support_buildplate_only"
+            || opt_key == "support_pillar_widening_factor"
+            || opt_key == "support_base_diameter"
+            || opt_key == "support_base_height"
+            || opt_key == "support_base_safety_distance"
+            || opt_key == "support_critical_angle"
+            || opt_key == "support_max_bridge_length"
+            || opt_key == "support_max_pillar_link_distance"
+            || opt_key == "support_object_elevation"
+            || opt_key == "branchingsupport_head_front_diameter"
+            || opt_key == "branchingsupport_head_penetration"
+            || opt_key == "branchingsupport_head_width"
+            || opt_key == "branchingsupport_pillar_diameter"
+            || opt_key == "branchingsupport_small_pillar_diameter_percent"
+            || opt_key == "branchingsupport_max_bridges_on_pillar"
+            || opt_key == "branchingsupport_max_weight_on_model"
+            || opt_key == "branchingsupport_pillar_connection_mode"
+            || opt_key == "branchingsupport_buildplate_only"
+            || opt_key == "branchingsupport_pillar_widening_factor"
+            || opt_key == "branchingsupport_base_diameter"
+            || opt_key == "branchingsupport_base_height"
+            || opt_key == "branchingsupport_base_safety_distance"
+            || opt_key == "branchingsupport_critical_angle"
+            || opt_key == "branchingsupport_max_bridge_length"
+            || opt_key == "branchingsupport_max_pillar_link_distance") {
+            steps.emplace_back(posSupportMaterial);
         } else if (opt_key == "support_material") {
             steps.emplace_back(posSupportMaterial);
             if (m_config.support_material_contact_distance == 0.) {
@@ -812,6 +979,30 @@ bool PrintObject::invalidate_state_by_config_options(
             || opt_key == "support_tree_top_rate"
             || opt_key == "support_tree_branch_distance"
             || opt_key == "support_tree_tip_diameter"
+            || opt_key == "support_tree_type"
+            || opt_key == "support_pillar_diameter"
+            || opt_key == "support_head_front_diameter"
+            || opt_key == "support_head_penetration"
+            || opt_key == "support_head_width"
+            || opt_key == "support_pillar_connection_mode"
+            || opt_key == "support_base_diameter"
+            || opt_key == "support_base_height"
+            || opt_key == "support_base_safety_distance"
+            || opt_key == "support_critical_angle"
+            || opt_key == "support_max_bridge_length"
+            || opt_key == "support_max_pillar_link_distance"
+            || opt_key == "support_buildplate_only"
+            || opt_key == "support_points_density_relative"
+            || opt_key == "branchingsupport_pillar_diameter"
+            || opt_key == "branchingsupport_head_front_diameter"
+            || opt_key == "branchingsupport_head_penetration"
+            || opt_key == "branchingsupport_head_width"
+            || opt_key == "branchingsupport_pillar_connection_mode"
+            || opt_key == "branchingsupport_base_diameter"
+            || opt_key == "branchingsupport_base_height"
+            || opt_key == "branchingsupport_critical_angle"
+            || opt_key == "branchingsupport_max_bridge_length"
+            || opt_key == "branchingsupport_max_pillar_link_distance"
             || opt_key == "raft_expansion"
             || opt_key == "raft_first_layer_density"
             || opt_key == "raft_first_layer_expansion"
@@ -3207,6 +3398,8 @@ void PrintObject::_generate_support_material()
 {
     if (this->has_support() && (m_config.support_material_style == smsTree || m_config.support_material_style == smsOrganic)) {
         fff_tree_support_generate(*this, std::function<void()>([this](){ this->throw_if_canceled(); }));
+    } else if (this->has_support() && m_config.support_material_style == smsSLAPillar) {
+        generate_sla_style_supports_for_fff(*this);
     } else {
         // If support style is set to Organic however only raft will be built but no support,
         // build snug raft instead.

@@ -363,13 +363,23 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig* config)
     toggle_field("support_material_bottom_contact_distance", have_support_material && ! have_support_soluble);
     toggle_field("support_material_closing_radius", have_support_material && support_material_style == smsSnug);
 
-    const bool has_organic_supports = support_material_style == smsOrganic && 
-                                     (config->opt_bool("support_material") || 
+    const bool has_organic_supports = support_material_style == smsOrganic &&
+                                     (config->opt_bool("support_material") ||
                                       config->opt_int("support_material_enforce_layers") > 0);
     for (const std::string& key : { "support_tree_angle", "support_tree_angle_slow", "support_tree_branch_diameter",
-                                    "support_tree_branch_diameter_angle", "support_tree_branch_diameter_double_wall", 
+                                    "support_tree_branch_diameter_angle", "support_tree_branch_diameter_double_wall",
                                     "support_tree_tip_diameter", "support_tree_branch_distance", "support_tree_top_rate" })
         toggle_field(key, has_organic_supports);
+
+    const bool has_sla_pillar_supports = support_material_style == smsSLAPillar && have_support_material;
+    for (const std::string& key : { "support_tree_type", "support_points_density_relative",
+                                    "support_head_front_diameter", "support_head_penetration",
+                                    "support_head_width", "support_pillar_diameter",
+                                    "support_pillar_connection_mode", "support_base_diameter",
+                                    "support_base_height", "support_base_safety_distance",
+                                    "support_critical_angle", "support_max_bridge_length",
+                                    "support_max_pillar_link_distance", "support_buildplate_only" })
+        toggle_field(key, has_sla_pillar_supports);
 
     for (auto el : { "support_material_bottom_interface_layers", "support_material_interface_spacing", "support_material_interface_extruder",
                     "support_material_interface_speed", "support_material_interface_contact_loops" })

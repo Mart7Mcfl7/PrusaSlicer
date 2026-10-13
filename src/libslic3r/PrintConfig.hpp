@@ -132,7 +132,7 @@ enum SupportMaterialPattern {
 };
 
 enum SupportMaterialStyle {
-    smsGrid, smsSnug, smsTree, smsOrganic,
+    smsGrid, smsSnug, smsTree, smsOrganic, smsSLAPillar,
 };
 
 enum SupportMaterialInterfacePattern {
