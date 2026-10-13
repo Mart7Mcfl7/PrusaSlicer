@@ -1,0 +1,46 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<component type="desktop">
+    <id>io.github.Mart7Mcfl7.PrusaSlicerSLA</id>
+    <launchable type="desktop-id">io.github.Mart7Mcfl7.PrusaSlicerSLA.desktop</launchable>
+    <name>PrusaSlicer (SLA Pillar)</name>
+    <summary>PrusaSlicer with SLA-style pillar supports for FDM printing</summary>
+    <developer id="io.github.Mart7Mcfl7">
+        <name>Mart7Mcfl7</name>
+    </developer>
+    <url type="homepage">https://github.com/Mart7Mcfl7/PrusaSlicer/tree/sla-pillar-supports</url>
+    <url type="bugtracker">https://github.com/Mart7Mcfl7/PrusaSlicer/issues</url>
+    <metadata_license>0BSD</metadata_license>
+    <project_license>AGPL-3.0-only</project_license>
+    <content_rating type="oars-1.1" />
+    <requires>
+        <display_length compare="gt">768</display_length>
+    </requires>
+    <recommends>
+        <control>keyboard</control>
+        <control>pointing</control>
+    </recommends>
+    <provides>
+        <mediatype>text/x.gcode</mediatype>
+        <mediatype>model/stl</mediatype>
+        <mediatype>application/x-amf</mediatype>
+        <mediatype>application/prs.wavefront-obj</mediatype>
+        <mediatype>application/vnd.ms-3mfdocument</mediatype>
+    </provides>
+    <description>
+        <p>
+            An unofficial build of PrusaSlicer, the open-source slicer by Prusa Research, adding an
+            "SLA Pillar" support style for FDM prints. It generates SLA-style pillar support trees on the
+            overhangs found by PrusaSlicer's FDM overhang detection, with the SLA support head, pillar
+            and base settings available on the FDM Support material page.
+        </p>
+        <p>
+            Not affiliated with or supported by Prusa Research. Installs next to the official
+            PrusaSlicer and keeps its own settings.
+        </p>
+    </description>
+    <releases>
+        <release version="2.9.5" date="2026-10-13">
+            <url>https://github.com/Mart7Mcfl7/PrusaSlicer/tree/sla-pillar-supports</url>
+        </release>
+    </releases>
+</component>
